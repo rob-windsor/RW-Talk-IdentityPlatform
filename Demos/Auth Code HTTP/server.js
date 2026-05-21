@@ -1,0 +1,104 @@
+import 'dotenv/config';
+import express from 'express';
+import session from 'express-session';
+
+const { TENANT_ID, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, SESSION_SECRET, PORT = 3000 } = process.env;
+
+const app = express();
+
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+}));
+
+app.get('/', (req, res) => {
+  if (!req.session.accessToken) {
+    return res.send(`
+      <h1>Entra ID Token Demo</h1>
+      <a href="/login">Login with Microsoft</a>
+    `);
+  }
+  res.send(`
+    <h1>Entra ID Token Demo</h1>
+    <p><strong>Token (first 50 chars):</strong> ${req.session.accessToken.slice(0, 50)}…</p>
+    <p><strong>Expires:</strong> ${new Date(req.session.tokenExpiry).toLocaleString()}</p>
+    <p><strong>Scopes:</strong> ${req.session.scopes}</p>
+    <p><a href="/me">View Graph /me profile</a> · <a href="/logout">Logout</a></p>
+  `);
+});
+
+// Redirect to Entra ID authorization endpoint
+app.get('/login', (req, res) => {
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: REDIRECT_URI,
+    scope: 'openid profile email User.Read',
+  });
+  res.redirect(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize?${params}`);
+});
+
+// Exchange authorization code for tokens
+app.get('/callback', async (req, res) => {
+  const { code, error, error_description } = req.query;
+
+  if (error) {
+    return res.status(400).send(`<p>Auth error: ${error_description}</p>`);
+  }
+
+  try {
+    const tokenRes = await fetch(
+      `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: REDIRECT_URI,
+          client_id: CLIENT_ID,
+          client_secret: CLIENT_SECRET,
+        }),
+      }
+    );
+
+    const tokens = await tokenRes.json();
+
+    if (tokens.error) {
+      return res.status(400).send(`<p>Token error: ${tokens.error_description}</p>`);
+    }
+
+    req.session.accessToken = tokens.access_token;
+    req.session.tokenExpiry = Date.now() + tokens.expires_in * 1000;
+    req.session.scopes = tokens.scope;
+
+    res.redirect('/');
+  } catch (err) {
+    res.status(500).send(`<p>Unexpected error: ${err.message}</p>`);
+  }
+});
+
+// Call Microsoft Graph /me using the stored access token
+app.get('/me', async (req, res) => {
+  if (!req.session.accessToken) {
+    return res.redirect('/');
+  }
+
+  try {
+    const meRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+      headers: { Authorization: `Bearer ${req.session.accessToken}` },
+    });
+    const profile = await meRes.json();
+    res.send(`<pre>${JSON.stringify(profile, null, 2)}</pre><p><a href="/">← Home</a></p>`);
+  } catch (err) {
+    res.status(500).send(`<p>Unexpected error: ${err.message}</p>`);
+  }
+});
+
+app.get('/logout', (req, res) => {
+  req.session.destroy();
+  res.redirect('/');
+});
+
+app.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
