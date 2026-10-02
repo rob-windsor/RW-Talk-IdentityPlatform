@@ -1,5 +1,7 @@
 import 'dotenv/config';
+import { randomBytes } from 'node:crypto';
 import express from 'express';
+import escapeHtml from 'escape-html';
 import session from 'express-session';
 import * as msal from '@azure/msal-node';
 
@@ -34,34 +36,56 @@ app.get('/', (req, res) => {
   const { username, name } = req.session.account;
   res.send(`
     <h1>Entra ID Token Demo (MSAL)</h1>
-    <p><strong>Account:</strong> ${username}</p>
-    <p><strong>Name:</strong> ${name}</p>
+    <p><strong>Account:</strong> ${escapeHtml(username)}</p>
+    <p><strong>Name:</strong> ${escapeHtml(name)}</p>
     <p><a href="/me">View Graph /me profile</a> · <a href="/logout">Logout</a></p>
   `);
 });
 
-// MSAL builds and signs the authorization URL (including state + nonce)
+// MSAL constructs the authorization URL; the app manages state
 app.get('/login', async (req, res) => {
   try {
+    const state = randomBytes(32).toString('hex');
+    req.session.authState = state;
+
     const authUrl = await pca.getAuthCodeUrl({
       scopes: SCOPES,
       redirectUri: REDIRECT_URI,
+      state,
     });
-    res.redirect(authUrl);
+    req.session.save((err) => {
+      if (err) {
+        console.error('Failed to save login state:', err);
+        return res.status(500).send('<p>Unable to start login. Please try again.</p>');
+      }
+      res.redirect(authUrl);
+    });
   } catch (err) {
-    res.status(500).send(`<p>Error building auth URL: ${err.message}</p>`);
+    res.status(500).send(`<p>Error building auth URL: ${escapeHtml(err.message)}</p>`);
   }
 });
 
 // MSAL exchanges the code and populates its in-memory token cache
 app.get('/callback', async (req, res) => {
-  const { code, error, error_description } = req.query;
+  const { code, error, error_description, state } = req.query;
 
-  if (error) {
-    return res.status(400).send(`<p>Auth error: ${error_description}</p>`);
+  if (typeof state !== 'string' || !state || state !== req.session.authState) {
+    return res.status(400).send('<p>Invalid login state. Please start login again.</p>');
   }
 
   try {
+    delete req.session.authState;
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+
+    if (error) {
+      return res.status(400).send(`<p>Auth error: ${escapeHtml(error_description)}</p>`);
+    }
+
     const tokenResponse = await pca.acquireTokenByCode({
       code,
       scopes: SCOPES,
@@ -72,7 +96,8 @@ app.get('/callback', async (req, res) => {
     req.session.account = tokenResponse.account;
     res.redirect('/');
   } catch (err) {
-    res.status(500).send(`<p>Token error: ${err.message}</p>`);
+    console.error('Authorization callback failed:', err);
+    res.status(500).send(`<p>Authorization callback error: ${escapeHtml(err.message)}</p>`);
   }
 });
 
@@ -92,13 +117,13 @@ app.get('/me', async (req, res) => {
       headers: { Authorization: `Bearer ${silentResponse.accessToken}` },
     });
     const profile = await meRes.json();
-    res.send(`<pre>${JSON.stringify(profile, null, 2)}</pre><p><a href="/">← Home</a></p>`);
+    res.send(`<pre>${escapeHtml(JSON.stringify(profile, null, 2))}</pre><p><a href="/">← Home</a></p>`);
   } catch (err) {
-    // Refresh token expired or missing — send user back through login
+    // Silent acquisition requires user interaction — start login again
     if (err instanceof msal.InteractionRequiredAuthError) {
       return res.redirect('/login');
     }
-    res.status(500).send(`<p>Unexpected error: ${err.message}</p>`);
+    res.status(500).send(`<p>Unexpected error: ${escapeHtml(err.message)}</p>`);
   }
 });
 
