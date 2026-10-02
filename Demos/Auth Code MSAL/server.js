@@ -83,7 +83,10 @@ app.get('/callback', async (req, res) => {
     });
 
     if (error) {
-      return res.status(400).send(`<p>Auth error: ${escapeHtml(error_description)}</p>`);
+      const message = typeof error_description === 'string' && error_description
+        ? error_description
+        : String(error);
+      return res.status(400).send(`<p>Auth error: ${escapeHtml(message)}</p>`);
     }
 
     if (typeof code !== 'string' || !code) {

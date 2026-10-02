@@ -69,7 +69,10 @@ app.get('/callback', async (req, res) => {
     });
 
     if (error) {
-      return res.status(400).send(`<p>Auth error: ${escapeHtml(error_description)}</p>`);
+      const message = typeof error_description === 'string' && error_description
+        ? error_description
+        : String(error);
+      return res.status(400).send(`<p>Auth error: ${escapeHtml(message)}</p>`);
     }
 
     if (typeof code !== 'string' || !code) {
@@ -91,15 +94,35 @@ app.get('/callback', async (req, res) => {
       }
     );
 
-    const tokens = await tokenRes.json();
+    let tokens;
+    try {
+      tokens = await tokenRes.json();
+    } catch {
+      return res.status(502).send('<p>Token endpoint returned an invalid response.</p>');
+    }
 
     if (tokens.error) {
-      return res.status(400).send(`<p>Token error: ${escapeHtml(tokens.error_description)}</p>`);
+      const message = typeof tokens.error_description === 'string' && tokens.error_description
+        ? tokens.error_description
+        : String(tokens.error);
+      return res.status(400).send(`<p>Token error: ${escapeHtml(message)}</p>`);
+    }
+
+    if (
+      typeof tokens.access_token !== 'string' ||
+      !tokens.access_token ||
+      typeof tokens.expires_in !== 'number' ||
+      !Number.isFinite(tokens.expires_in) ||
+      tokens.expires_in < 0
+    ) {
+      return res.status(502).send('<p>Token endpoint returned an incomplete token response.</p>');
     }
 
     req.session.accessToken = tokens.access_token;
     req.session.tokenExpiry = Date.now() + tokens.expires_in * 1000;
-    req.session.scopes = tokens.scope;
+    req.session.scopes = typeof tokens.scope === 'string'
+      ? tokens.scope
+      : 'openid profile email User.Read';
 
     res.redirect('/');
   } catch (err) {
