@@ -62,8 +62,8 @@ Then open `http://localhost:3000` in a browser.
 |---|---|
 | `GET /` | Home page — shows a login link when unauthenticated, or token details when signed in |
 | `GET /login` | Saves random state in the session, builds the Entra ID authorization URL, and redirects the user |
-| `GET /callback` | Validates and consumes state, then exchanges the authorization code via `fetch` and stores the token in the session |
-| `GET /me` | Calls Microsoft Graph `GET /v1.0/me` using the stored bearer token |
+| `GET /callback` | Validates and consumes state, rejects a missing or invalid authorization code, then exchanges it via `fetch` and stores the token in the session |
+| `GET /me` | Calls Microsoft Graph `GET /v1.0/me` using the stored bearer token; reports Graph HTTP errors as `502 Bad Gateway` |
 | `GET /logout` | Destroys the server-side session |
 
 ---
@@ -125,10 +125,10 @@ Browser                  This App               Entra ID              Microsoft 
 
 1. **`/login`** — The app generates an unpredictable `state` with Node's `crypto.randomBytes()` and saves it in the browser's server-side session. It constructs the authorization URL with `client_id`, `response_type=code`, `redirect_uri`, `scope`, and `state`, then redirects the browser only after the session is saved.
 2. **User authentication** — Entra ID presents the Microsoft login page. The user signs in and, if required, consents to the requested scopes.
-3. **Redirect to `/callback`** — Entra ID redirects the browser to `REDIRECT_URI` with a short-lived `code` and the original `state`. The app requires a single, nonempty state string matching the session value before processing a code or an authentication error. Invalid state returns HTTP 400 without contacting the token endpoint. Matching state is removed from the session and that change is saved before continuing; session-save failures return HTTP 500 without redeeming the code.
+3. **Redirect to `/callback`** — Entra ID redirects the browser to `REDIRECT_URI` with a short-lived `code` and the original `state`. The app requires a single, nonempty state string matching the session value before processing a code or an authentication error. Invalid state returns HTTP 400 without contacting the token endpoint. Matching state is removed from the session and that change is saved before continuing; session-save failures return HTTP 500 without redeeming the code. After handling an Entra authentication error, the app requires exactly one nonempty string authorization code and returns HTTP 400 if it is missing or malformed.
 4. **Token exchange** — The app POSTs the code along with `client_id`, `client_secret`, and `redirect_uri` to the Entra ID token endpoint. Entra ID responds with an access token, its expiry, and the granted scopes.
 5. **Session storage** — The access token, expiry timestamp, and scopes are stored in the server-side session (`express-session` in-memory store).
-6. **API call (`/me`)** — The app reads the token from the session and calls Microsoft Graph with an `Authorization: Bearer` header to retrieve the signed-in user's profile.
+6. **API call (`/me`)** — The app reads the token from the session and calls Microsoft Graph with an `Authorization: Bearer` header to retrieve the signed-in user's profile. A non-success Graph response is reported as `502 Bad Gateway`, not rendered as a successful profile.
 7. **Logout** — The session is destroyed on the server; no Entra ID logout endpoint is called (the Microsoft SSO session remains active in the browser).
 
 Each new login replaces the pending state, so only the latest login attempt in a

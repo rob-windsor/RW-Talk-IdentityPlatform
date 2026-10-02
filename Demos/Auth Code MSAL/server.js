@@ -86,6 +86,10 @@ app.get('/callback', async (req, res) => {
       return res.status(400).send(`<p>Auth error: ${escapeHtml(error_description)}</p>`);
     }
 
+    if (typeof code !== 'string' || !code) {
+      return res.status(400).send('<p>Missing or invalid authorization code.</p>');
+    }
+
     const tokenResponse = await pca.acquireTokenByCode({
       code,
       scopes: SCOPES,
@@ -116,6 +120,11 @@ app.get('/me', async (req, res) => {
     const meRes = await fetch('https://graph.microsoft.com/v1.0/me', {
       headers: { Authorization: `Bearer ${silentResponse.accessToken}` },
     });
+    if (!meRes.ok) {
+      return res.status(502).send(
+        `<p>Microsoft Graph request failed with HTTP ${meRes.status} ${escapeHtml(meRes.statusText)}.</p>`
+      );
+    }
     const profile = await meRes.json();
     res.send(`<pre>${escapeHtml(JSON.stringify(profile, null, 2))}</pre><p><a href="/">← Home</a></p>`);
   } catch (err) {

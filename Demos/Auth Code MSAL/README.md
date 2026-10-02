@@ -68,8 +68,8 @@ Then open `http://localhost:3000` in a browser.
 |---|---|
 | `GET /` | Home page — shows a login link when unauthenticated, or account name/username when signed in |
 | `GET /login` | Generates and saves session state, passes it to `pca.getAuthCodeUrl()`, and redirects the user |
-| `GET /callback` | Validates and consumes state, calls `pca.acquireTokenByCode()`, and stores the MSAL `account` reference in the session |
-| `GET /me` | Calls `pca.acquireTokenSilent()` to get a (possibly cached) token, then calls Microsoft Graph `GET /v1.0/me` |
+| `GET /callback` | Validates and consumes state, rejects a missing or invalid authorization code, calls `pca.acquireTokenByCode()`, and stores the MSAL `account` reference in the session |
+| `GET /me` | Calls `pca.acquireTokenSilent()` to get a (possibly cached) token, then calls Microsoft Graph `GET /v1.0/me`; reports Graph HTTP errors as `502 Bad Gateway` |
 | `GET /logout` | Destroys the server-side session |
 
 ---
@@ -134,10 +134,10 @@ Browser                  This App (MSAL)         Entra ID              Microsoft
 
 1. **`/login`** — The app generates unpredictable state with Node's `crypto.randomBytes()`, stores it in the session, and passes it along with scopes and the redirect URI to `pca.getAuthCodeUrl()`. MSAL constructs the URL; it does not sign it. The app saves the session before redirecting the browser.
 2. **User authentication** — Entra ID presents the Microsoft login page. The user signs in and, if required, consents to the requested scopes.
-3. **Redirect to `/callback`** — Entra ID redirects back to `REDIRECT_URI` with a short-lived `code` and the state supplied by the app. The app requires a single, nonempty state string matching the session value before processing either a code or an authentication error. Invalid state returns HTTP 400 without calling `acquireTokenByCode()`. Matching state is consumed and the session saved before continuing; session-save failures return HTTP 500 without exchanging the code.
+3. **Redirect to `/callback`** — Entra ID redirects back to `REDIRECT_URI` with a short-lived `code` and the state supplied by the app. The app requires a single, nonempty state string matching the session value before processing either a code or an authentication error. Invalid state returns HTTP 400 without calling `acquireTokenByCode()`. Matching state is consumed and the session saved before continuing; session-save failures return HTTP 500 without exchanging the code. After handling an Entra authentication error, the app requires exactly one nonempty string authorization code and returns HTTP 400 if it is missing or malformed.
 4. **Token exchange** — The app calls `pca.acquireTokenByCode()`. MSAL POSTs to the Entra ID token endpoint and caches tokens in the **in-memory token cache** on the `ConfidentialClientApplication` instance. The result exposes the access token and account; refresh tokens are managed internally by MSAL, not returned to application code.
 5. **Session storage** — Only the MSAL `AccountInfo` object (a lightweight reference — no raw token) is stored in the `express-session`. The actual tokens remain in the MSAL cache.
-6. **API call (`/me`)** — The app calls `pca.acquireTokenSilent()` with the stored account reference. MSAL checks its cache first; if the access token is still valid it is returned immediately. If it has expired, MSAL automatically uses the refresh token to obtain a new one from Entra ID before returning. The resulting token is used to call Microsoft Graph.
+6. **API call (`/me`)** — The app calls `pca.acquireTokenSilent()` with the stored account reference. MSAL checks its cache first; if the access token is still valid it is returned immediately. If it has expired, MSAL automatically uses the refresh token to obtain a new one from Entra ID before returning. The resulting token is used to call Microsoft Graph. A non-success Graph response is reported as `502 Bad Gateway`, not rendered as a successful profile.
 7. **Interaction required** — If `acquireTokenSilent()` throws `InteractionRequiredAuthError`, the user is redirected back through `/login`. Silent renewal cannot always complete, for example when additional consent or authentication is required.
 8. **Logout** — The server-side session is destroyed. The MSAL in-memory cache entry is not explicitly removed (the cache lives on the shared `pca` instance and clears on server restart). No Entra ID logout endpoint is called.
 
