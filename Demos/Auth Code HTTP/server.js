@@ -1,5 +1,7 @@
 import 'dotenv/config';
+import { randomBytes } from 'node:crypto';
 import express from 'express';
+import escapeHtml from 'escape-html';
 import session from 'express-session';
 
 const { TENANT_ID, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, SESSION_SECRET, PORT = 3000 } = process.env;
@@ -21,33 +23,55 @@ app.get('/', (req, res) => {
   }
   res.send(`
     <h1>Entra ID Token Demo</h1>
-    <p><strong>Token (first 50 chars):</strong> ${req.session.accessToken.slice(0, 50)}…</p>
-    <p><strong>Expires:</strong> ${new Date(req.session.tokenExpiry).toLocaleString()}</p>
-    <p><strong>Scopes:</strong> ${req.session.scopes}</p>
+    <p><strong>Token (first 50 chars):</strong> ${escapeHtml(req.session.accessToken.slice(0, 50))}…</p>
+    <p><strong>Expires:</strong> ${escapeHtml(new Date(req.session.tokenExpiry).toLocaleString())}</p>
+    <p><strong>Scopes:</strong> ${escapeHtml(req.session.scopes)}</p>
     <p><a href="/me">View Graph /me profile</a> · <a href="/logout">Logout</a></p>
   `);
 });
 
 // Redirect to Entra ID authorization endpoint
 app.get('/login', (req, res) => {
+  const state = randomBytes(32).toString('hex');
+  req.session.authState = state;
+
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
     response_type: 'code',
     redirect_uri: REDIRECT_URI,
     scope: 'openid profile email User.Read',
+    state,
   });
-  res.redirect(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize?${params}`);
+  req.session.save((err) => {
+    if (err) {
+      console.error('Failed to save login state:', err);
+      return res.status(500).send('<p>Unable to start login. Please try again.</p>');
+    }
+    res.redirect(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize?${params}`);
+  });
 });
 
 // Exchange authorization code for tokens
 app.get('/callback', async (req, res) => {
-  const { code, error, error_description } = req.query;
+  const { code, error, error_description, state } = req.query;
 
-  if (error) {
-    return res.status(400).send(`<p>Auth error: ${error_description}</p>`);
+  if (typeof state !== 'string' || !state || state !== req.session.authState) {
+    return res.status(400).send('<p>Invalid login state. Please start login again.</p>');
   }
 
   try {
+    delete req.session.authState;
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+
+    if (error) {
+      return res.status(400).send(`<p>Auth error: ${escapeHtml(error_description)}</p>`);
+    }
+
     const tokenRes = await fetch(
       `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`,
       {
@@ -66,7 +90,7 @@ app.get('/callback', async (req, res) => {
     const tokens = await tokenRes.json();
 
     if (tokens.error) {
-      return res.status(400).send(`<p>Token error: ${tokens.error_description}</p>`);
+      return res.status(400).send(`<p>Token error: ${escapeHtml(tokens.error_description)}</p>`);
     }
 
     req.session.accessToken = tokens.access_token;
@@ -75,7 +99,8 @@ app.get('/callback', async (req, res) => {
 
     res.redirect('/');
   } catch (err) {
-    res.status(500).send(`<p>Unexpected error: ${err.message}</p>`);
+    console.error('Authorization callback failed:', err);
+    res.status(500).send(`<p>Unexpected error: ${escapeHtml(err.message)}</p>`);
   }
 });
 
@@ -90,9 +115,9 @@ app.get('/me', async (req, res) => {
       headers: { Authorization: `Bearer ${req.session.accessToken}` },
     });
     const profile = await meRes.json();
-    res.send(`<pre>${JSON.stringify(profile, null, 2)}</pre><p><a href="/">← Home</a></p>`);
+    res.send(`<pre>${escapeHtml(JSON.stringify(profile, null, 2))}</pre><p><a href="/">← Home</a></p>`);
   } catch (err) {
-    res.status(500).send(`<p>Unexpected error: ${err.message}</p>`);
+    res.status(500).send(`<p>Unexpected error: ${escapeHtml(err.message)}</p>`);
   }
 });
 
